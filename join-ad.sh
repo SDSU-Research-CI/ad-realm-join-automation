@@ -57,14 +57,16 @@ stage1() {
 
   read -r -p "New hostname for this machine (blank = keep current: $(hostname)): " NEW_HOSTNAME
   if [[ -n "${NEW_HOSTNAME}" ]]; then
+    read -r -p "AD domain for the FQDN line in /etc/hosts [id.sdsu.edu]: " HOSTS_DOMAIN
+    HOSTS_DOMAIN=${HOSTS_DOMAIN:-id.sdsu.edu}
     backup_file /etc/hostname
     backup_file /etc/hosts
     echo "${NEW_HOSTNAME}" > /etc/hostname
     hostnamectl set-hostname "${NEW_HOSTNAME}"
     if grep -q '^127\.0\.1\.1' /etc/hosts; then
-      sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t${NEW_HOSTNAME}/" /etc/hosts
+      sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t${NEW_HOSTNAME}.${HOSTS_DOMAIN}\t${NEW_HOSTNAME}/" /etc/hosts
     else
-      printf '127.0.1.1\t%s\n' "${NEW_HOSTNAME}" >> /etc/hosts
+      printf '127.0.1.1\t%s.%s\t%s\n' "${NEW_HOSTNAME}" "${HOSTS_DOMAIN}" "${NEW_HOSTNAME}" >> /etc/hosts
     fi
     echo "Updated hostname to ${NEW_HOSTNAME} (backups at .bak-preadjoin)."
   fi
@@ -118,7 +120,7 @@ stage2() {
       ;;
   esac
 
-  read -r -p "Admin account to join with (e.g. jowens-admin@${DOMAIN}): " ADMIN_USER
+  read -r -p "Admin account to join with (e.g. jdoe-admin@${DOMAIN}): " ADMIN_USER
   read -r -p "Computer OU [${DEFAULT_OU}]: " COMPUTER_OU
   COMPUTER_OU=${COMPUTER_OU:-$DEFAULT_OU}
 
