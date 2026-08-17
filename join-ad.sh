@@ -3,20 +3,20 @@
 # join-ad.sh — Automates joining an Ubuntu (22.04+) machine to ID.SDSU.EDU
 # following the "Realm Join Instructions" runbook.
 #
-# Runs in two stages, re-run the script to move to Stage 2:
-#   STAGE 1 (first run):  NTP time sync (auto-detected/applied) + hostname
-#            + /etc/hosts config
-#   STAGE 2 (run script again): package install, realm join, sssd.conf
-#            tuning, home dirs, access/sudoers groups, then a reboot at
-#            the very end so you can log back in and verify everything.
+# Runs everything in a single pass, one "sudo ./join-ad.sh" invocation:
+#   1. NTP time sync (auto-detected/applied) + hostname + /etc/hosts config
+#   2. package install, realm join, sssd.conf tuning, home dirs, UMASK
+#      hardening, access/sudoers groups
+#   3. a reboot prompt at the very end so you can log back in and verify
+#      everything worked.
 #
-# The script detects which stage to run via a marker file in /var/tmp.
+# No reboot is needed partway through, so there's no need to run this
+# script more than once.
 #
 # Must be run with sudo/root privileges.
 #
 set -euo pipefail
 
-MARKER=/var/tmp/ad-join-stage1-done
 SSSD_CONF=/etc/sssd/sssd.conf
 
 require_root() {
@@ -40,7 +40,7 @@ backup_file() {
 }
 
 ### ---------------------------------------------------------------------
-### STAGE 1: time sync + hostname (pre-join, pre-reboot)
+### Step 1: time sync + hostname
 ### ---------------------------------------------------------------------
 
 # SDSU campus NTP servers, used as the auto-applied default when no NTP
@@ -108,8 +108,8 @@ update_etc_hosts() {
   fi
 }
 
-stage1() {
-  echo "=== Stage 1: time sync + hostname ==="
+time_sync_and_hostname() {
+  echo "=== Step 1: time sync + hostname ==="
 
   configure_ntp
 
@@ -125,18 +125,17 @@ stage1() {
     echo "Verify: grep ^127 /etc/hosts"
   fi
 
-  touch "${MARKER}"
   echo
-  echo "Stage 1 complete. Re-run this script (sudo ./join-ad.sh) to continue with Stage 2."
-  echo "A reboot will be offered at the end of Stage 2, once the domain join and all"
-  echo "post-join configuration is finished, so you can log back in and verify it worked."
+  echo "Time sync + hostname done. Continuing straight into the domain join —"
+  echo "no reboot is needed until everything below is finished."
+  echo
 }
 
 ### ---------------------------------------------------------------------
-### STAGE 2: packages + realm join + post-join config
+### Packages + realm join + post-join config
 ### ---------------------------------------------------------------------
-stage2() {
-  echo "=== Stage 2: package install + domain join ==="
+join_domain_and_configure() {
+  echo "=== Step 2: package install + domain join ==="
 
   echo "Installing required packages..."
   apt-get update -y
@@ -301,8 +300,6 @@ stage2() {
     done
   fi
 
-  rm -f "${MARKER}"
-
   echo
   echo "=== Done ==="
   echo "Verify with:"
@@ -327,11 +324,8 @@ stage2() {
 ### ---------------------------------------------------------------------
 main() {
   require_root
-  if [[ -f "${MARKER}" ]]; then
-    stage2
-  else
-    stage1
-  fi
+  time_sync_and_hostname
+  join_domain_and_configure
 }
 
 main "$@"
