@@ -8,10 +8,10 @@ Automates joining Ubuntu 22.04+ machines to an Active Directory domain (`realmd`
 
 `join-ad.sh` walks through the full join process in two stages (a reboot is required in between):
 
-- **Stage 1:** optional NTP server update, hostname/hosts update, then prompts to reboot.
-- **Stage 2** (after reboot): installs required packages, discovers the domain, prompts for the admin account and computer OU (with presets as a starting point), joins the domain, applies recommended `sssd.conf` settings, enables home directory creation on login, optionally sets a default primary group (`override_gid`), optionally grants an AD group sudo access, and optionally locks down logins to specific users/groups.
+- **Stage 1:** auto-detects and configures NTP if not already set, hostname/hosts update (including on cloud-init images where the hostname is mapped via a `127.0.0.1` line instead of `127.0.1.1`).
+- **Stage 2** (run the script again): installs required packages, discovers the domain, prompts for the admin account (just the short name — the domain is appended automatically) and computer OU (with presets as a starting point), joins the domain, applies recommended `sssd.conf` settings, enables home directory creation on login, applies UMASK 007 hardening, optionally sets a default primary group (`override_gid`), optionally grants an AD group login access and/or sudo access (group names are auto-lowercased), and ends with a reboot so you can log back in and verify everything.
 
-It tracks progress via a marker file (`/var/tmp/ad-join-stage1-done`) so re-running the script after reboot resumes automatically at Stage 2. Every config file it touches is backed up once as `<file>.bak-preadjoin` before editing.
+It tracks progress via a marker file (`/var/tmp/ad-join-stage1-done`) so re-running the script resumes automatically at Stage 2. Every config file it touches is backed up once as `<file>.bak-preadjoin` before editing.
 
 ## Requirements
 
@@ -32,10 +32,9 @@ sudo ./join-ad.sh
 
 ## What it does NOT automate
 
-- Creating the AD security group itself — that happens in Active Directory, not on the Linux box.
+- Creating the AD security group itself — that happens in Active Directory, not on the Linux box. Create it *before* running the script, since Stage 2 asks for the access/sudo group names near the end.
 - SSH access restriction (`sshusers` group + `sshd_config` changes) — only needed on some machines.
 - `chmod g+s` on shared directories — folder-specific, run manually as needed.
-- UMASK hardening (`/etc/login.defs`, `/etc/profile`) — run manually if required for that machine.
 
 ## Notes on department OU presets
 
