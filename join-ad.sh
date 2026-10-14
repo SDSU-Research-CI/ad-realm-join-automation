@@ -13,6 +13,11 @@
 # No reboot is needed partway through, so there's no need to run this
 # script more than once.
 #
+# Prompt tips: at free-text prompts (hostname, Computer OU) press Enter to
+# accept the default. A stray "y" or "n" is rejected instead of being used
+# as a value. Individual users can be permitted for login and given sudo
+# without creating an AD security group.
+#
 # Must be run with sudo/root privileges.
 #
 set -euo pipefail
@@ -37,6 +42,44 @@ backup_file() {
   if [[ -f "$f" && ! -f "${f}.bak-preadjoin" ]]; then
     cp "$f" "${f}.bak-preadjoin"
   fi
+}
+
+# True when the answer looks like a stray yes/no typed at a free-text prompt.
+looks_like_yes_no() {
+  [[ "${1,,}" =~ ^(y|n|yes|no)$ ]]
+}
+
+# 1 to 15 characters (NetBIOS limit for AD computer accounts), letters,
+# digits and hyphens, not starting or ending with a hyphen.
+valid_hostname() {
+  [[ "$1" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,13}[A-Za-z0-9])?$ ]]
+}
+
+# Expect a distinguished name such as OU=Workstations,OU=Dept,DC=id,DC=sdsu,DC=edu
+valid_ou() {
+  [[ "${1^^}" =~ ^(OU|CN)=.+,DC=.+ ]]
+}
+
+# Add one line to /etc/sudoers.d/domain. The change is validated on a
+# temporary copy first, so a typo can never break sudo.
+add_sudoers_line() {
+  local line="$1" target=/etc/sudoers.d/domain tmp
+  tmp=$(mktemp)
+  if [[ -f "${target}" ]]; then
+    cp "${target}" "${tmp}"
+  fi
+  if grep -qxF "${line}" "${tmp}"; then
+    echo "Sudoers already contains: ${line}"
+  else
+    echo "${line}" >> "${tmp}"
+  fi
+  if visudo -cf "${tmp}" >/dev/null; then
+    install -m 0440 -o root -g root "${tmp}" "${target}"
+    echo "Sudoers updated (${target}): ${line}"
+  else
+    echo "WARNING: invalid sudoers line, not applied: ${line}" >&2
+  fi
+  rm -f "${tmp}"
 }
 
 ### ---------------------------------------------------------------------
@@ -113,7 +156,18 @@ time_sync_and_hostname() {
 
   configure_ntp
 
-  read -r -p "New hostname for this machine (blank = keep current: $(hostname)): " NEW_HOSTNAME
+  while true; do
+    read -r -p "New hostname for this machine (press Enter to keep: $(hostname)): " NEW_HOSTNAME
+    if [[ -z "${NEW_HOSTNAME}" ]]; then
+      break
+    elif looks_like_yes_no "${NEW_HOSTNAME}"; then
+      echo "'${NEW_HOSTNAME}' looks like a yes/no answer. This prompt wants a hostname, or press Enter to keep '$(hostname)'."
+    elif ! valid_hostname "${NEW_HOSTNAME}"; then
+      echo "Invalid hostname. Use 1 to 15 letters, digits or hyphens (AD computer name limit)."
+    else
+      break
+    fi
+  done
   if [[ -n "${NEW_HOSTNAME}" ]]; then
     read -r -p "AD domain for the FQDN line in /etc/hosts [id.sdsu.edu]: " HOSTS_DOMAIN
     HOSTS_DOMAIN=${HOSTS_DOMAIN:-id.sdsu.edu}
@@ -189,13 +243,17 @@ join_domain_and_configure() {
   ADMIN_USER="${ADMIN_USER_SHORT}@${DOMAIN}"
   echo "Using admin account: ${ADMIN_USER}"
 
-  read -r -p "Computer OU [${DEFAULT_OU}]: " COMPUTER_OU
-  COMPUTER_OU=${COMPUTER_OU:-$DEFAULT_OU}
-
-  if [[ -z "${COMPUTER_OU}" ]]; then
-    echo "Computer OU is required. Aborting join." >&2
-    exit 1
-  fi
+  while true; do
+    read -r -p "Computer OU (press Enter to accept the default) [${DEFAULT_OU}]: " COMPUTER_OU
+    COMPUTER_OU=${COMPUTER_OU:-$DEFAULT_OU}
+    if [[ -z "${COMPUTER_OU}" ]]; then
+      echo "A Computer OU is required. Enter the full DN, e.g. OU=Workstations,OU=Dept,DC=id,DC=sdsu,DC=edu"
+    elif ! valid_ou "${COMPUTER_OU}"; then
+      echo "That does not look like an OU distinguished name (expected OU=...,DC=...). Try again."
+    else
+      break
+    fi
+  done
 
   echo
   echo "About to run:"
@@ -208,7 +266,16 @@ join_domain_and_configure() {
   # If this machine was previously joined, leave first so the join is clean.
   realm list | grep -q "${DOMAIN}" && { echo "Already joined — leaving first (rejoin)."; realm leave || true; }
 
-  realm join -v -U "${ADMIN_USER}" "${DOMAIN}" --computer-ou="${COMPUTER_OU}"
+  if ! realm join -v -U "${ADMIN_USER}" "${DOMAIN}" --computer-ou="${COMPUTER_OU}"; then
+    echo >&2
+    echo "The domain join failed. Common causes:" >&2
+    echo "  - 'Preauthentication failed': wrong password, wrong admin account name, or a locked account." >&2
+    echo "    Test with 'kinit ${ADMIN_USER}' (needs krb5-user) and avoid repeated attempts, which can lock the account." >&2
+    echo "  - Wrong Computer OU, or the account lacks rights on that OU." >&2
+    echo "  - Clock skew: check 'timedatectl status'." >&2
+    echo "Fix the cause and run the script again." >&2
+    exit 1
+  fi
 
   echo
   echo "=== Post-join configuration ==="
@@ -273,10 +340,8 @@ join_domain_and_configure() {
   SUDO_GROUP=$(echo "${SUDO_GROUP}" | tr '[:upper:]' '[:lower:]')
 
   if [[ -n "${SUDO_GROUP}" ]]; then
-    echo "%${SUDO_GROUP} ALL=(ALL:ALL) ALL" > /etc/sudoers.d/domain
-    chmod 440 /etc/sudoers.d/domain
-    visudo -cf /etc/sudoers.d/domain
-    echo "Wrote /etc/sudoers.d/domain granting sudo to %${SUDO_GROUP} (lowercased automatically)."
+    add_sudoers_line "%${SUDO_GROUP} ALL=(ALL:ALL) ALL"
+    echo "(group name lowercased automatically)"
   fi
 
   echo
@@ -289,19 +354,47 @@ join_domain_and_configure() {
   fi
   if pause_confirm "Permit any additional individual users or groups for login?"; then
     while pause_confirm "Permit another user or group?"; do
-      read -r -p "  Type 'user' or 'group': " KIND
-      read -r -p "  Name: " NAME
+      KIND=""
+      while [[ "${KIND}" != "user" && "${KIND}" != "group" ]]; do
+        read -r -p "  Type the word 'user' or 'group': " KIND
+        KIND=$(echo "${KIND}" | tr '[:upper:]' '[:lower:]')
+      done
+      read -r -p "  Exact AD ${KIND} name: " NAME
       NAME=$(echo "${NAME}" | tr '[:upper:]' '[:lower:]')
+      if [[ -z "${NAME}" ]]; then
+        echo "  No name entered, skipping."
+        continue
+      fi
+      # Make sure the name exists in AD before it goes into the login policy.
+      if [[ "${KIND}" == "group" ]]; then
+        LOOKUP="group"
+      else
+        LOOKUP="passwd"
+      fi
+      if ! getent "${LOOKUP}" "${NAME}" >/dev/null; then
+        echo "  '${NAME}' was not found in AD (getent ${LOOKUP}). Check the spelling."
+        if ! pause_confirm "  Permit '${NAME}' anyway?"; then
+          continue
+        fi
+      fi
       if [[ "${KIND}" == "group" ]]; then
         realm permit --groups "${NAME}"
+        if pause_confirm "  Also grant sudo to members of '${NAME}'?"; then
+          add_sudoers_line "%${NAME} ALL=(ALL:ALL) ALL"
+        fi
       else
         realm permit "${NAME}"
+        if pause_confirm "  Also grant sudo to '${NAME}'?"; then
+          add_sudoers_line "${NAME} ALL=(ALL:ALL) ALL"
+        fi
       fi
     done
   fi
 
   echo
   echo "=== Done ==="
+  realm list || true
+  echo
   echo "Verify with:"
   echo "  realm list"
   echo "  id <domainuser>"
