@@ -49,11 +49,11 @@ To get later updates, run `git pull` inside the folder.
 | Computer OU | Press **Enter** to accept the default. Anything else must be a full DN (`OU=...,DC=...`); a stray `y` is rejected. |
 | Proceed? | `y` to run `realm join`, then enter the admin password. |
 | `override_gid`, login group, sudo group | Leave blank to skip. |
-| Permit additional users or groups | Type the word `user` or `group`, then the exact AD name. The script checks that the name exists in AD and warns if it does not. For a user, it offers to grant sudo too. |
+| Permit an individual user or group for login now? | `y` to add someone, `n` to skip. Then type the word `user` or `group`, and the exact AD name. The script checks that the name exists in AD and warns if it does not, and offers to grant sudo. It then asks "Permit another user or group?" until you answer `n`. Any answer other than y or n is asked again. |
 
 ## Allowing individual users (no AD group)
 
-At the "Permit additional individual users or groups" prompt, add each person as a `user` and answer `y` to "Also grant sudo". The script writes the sudoers entry to `/etc/sudoers.d/domain` after validating it with `visudo`.
+At the "Permit an individual user or group for login now?" prompt, add each person as a `user` and answer `y` to "Also grant sudo". The script writes the sudoers entry to `/etc/sudoers.d/domain` after validating it with `visudo`.
 
 You can also do it by hand later:
 

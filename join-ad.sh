@@ -31,10 +31,18 @@ require_root() {
   fi
 }
 
+# Ask a yes/no question. Enter means no. Anything other than y/yes/n/no is
+# rejected and the question is asked again, so a typo is never taken as "no".
 pause_confirm() {
-  local prompt="$1"
-  read -r -p "$prompt [y/N]: " ans
-  [[ "$ans" =~ ^[Yy]$ ]]
+  local prompt="$1" ans
+  while true; do
+    read -r -p "$prompt [y/N]: " ans
+    case "${ans,,}" in
+      y|yes) return 0 ;;
+      n|no|"") return 1 ;;
+      *) echo "Please answer y or n (press Enter for no)." ;;
+    esac
+  done
 }
 
 backup_file() {
@@ -352,44 +360,47 @@ join_domain_and_configure() {
       echo "Login restricted to members of '${ACCESS_GROUP}' (lowercased automatically)."
     fi
   fi
-  if pause_confirm "Permit any additional individual users or groups for login?"; then
-    while pause_confirm "Permit another user or group?"; do
-      KIND=""
-      while [[ "${KIND}" != "user" && "${KIND}" != "group" ]]; do
-        read -r -p "  Type the word 'user' or 'group': " KIND
-        KIND=$(echo "${KIND}" | tr '[:upper:]' '[:lower:]')
-      done
-      read -r -p "  Exact AD ${KIND} name: " NAME
-      NAME=$(echo "${NAME}" | tr '[:upper:]' '[:lower:]')
-      if [[ -z "${NAME}" ]]; then
-        echo "  No name entered, skipping."
+  echo
+  echo "Login access: a fresh join allows every AD user to log in until you permit specific"
+  echo "users or groups below. Once you permit someone, only the permitted accounts can log in."
+  PERMIT_PROMPT="Permit an individual user or group for login now?"
+  while pause_confirm "${PERMIT_PROMPT}"; do
+    PERMIT_PROMPT="Permit another user or group?"
+    KIND=""
+    while [[ "${KIND}" != "user" && "${KIND}" != "group" ]]; do
+      read -r -p "  Type the word 'user' or 'group': " KIND
+      KIND=$(echo "${KIND}" | tr '[:upper:]' '[:lower:]')
+    done
+    read -r -p "  Exact AD ${KIND} name: " NAME
+    NAME=$(echo "${NAME}" | tr '[:upper:]' '[:lower:]')
+    if [[ -z "${NAME}" ]]; then
+      echo "  No name entered, skipping."
+      continue
+    fi
+    # Make sure the name exists in AD before it goes into the login policy.
+    if [[ "${KIND}" == "group" ]]; then
+      LOOKUP="group"
+    else
+      LOOKUP="passwd"
+    fi
+    if ! getent "${LOOKUP}" "${NAME}" >/dev/null; then
+      echo "  '${NAME}' was not found in AD (getent ${LOOKUP}). Check the spelling."
+      if ! pause_confirm "  Permit '${NAME}' anyway?"; then
         continue
       fi
-      # Make sure the name exists in AD before it goes into the login policy.
-      if [[ "${KIND}" == "group" ]]; then
-        LOOKUP="group"
-      else
-        LOOKUP="passwd"
+    fi
+    if [[ "${KIND}" == "group" ]]; then
+      realm permit --groups "${NAME}"
+      if pause_confirm "  Also grant sudo to members of '${NAME}'?"; then
+        add_sudoers_line "%${NAME} ALL=(ALL:ALL) ALL"
       fi
-      if ! getent "${LOOKUP}" "${NAME}" >/dev/null; then
-        echo "  '${NAME}' was not found in AD (getent ${LOOKUP}). Check the spelling."
-        if ! pause_confirm "  Permit '${NAME}' anyway?"; then
-          continue
-        fi
+    else
+      realm permit "${NAME}"
+      if pause_confirm "  Also grant sudo to '${NAME}'?"; then
+        add_sudoers_line "${NAME} ALL=(ALL:ALL) ALL"
       fi
-      if [[ "${KIND}" == "group" ]]; then
-        realm permit --groups "${NAME}"
-        if pause_confirm "  Also grant sudo to members of '${NAME}'?"; then
-          add_sudoers_line "%${NAME} ALL=(ALL:ALL) ALL"
-        fi
-      else
-        realm permit "${NAME}"
-        if pause_confirm "  Also grant sudo to '${NAME}'?"; then
-          add_sudoers_line "${NAME} ALL=(ALL:ALL) ALL"
-        fi
-      fi
-    done
-  fi
+    fi
+  done
 
   echo
   echo "=== Done ==="
