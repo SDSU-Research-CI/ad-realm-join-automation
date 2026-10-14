@@ -103,6 +103,3 @@ Then test a real AD login (SSH or the login screen) and confirm the home directo
 - **Only one user can log in, or nobody can**: check `realm list` for `login-policy` and `permitted-logins`. Fix with `sudo realm permit <user>`, or reset with `sudo realm permit --all`.
 - **Clock skew errors**: check `timedatectl status` and the NTP servers in `/etc/systemd/timesyncd.conf`.
 
-## License
-
-MIT, see [LICENSE](LICENSE), or remove this section if you'd rather not license it for reuse.
